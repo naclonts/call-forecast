@@ -1,14 +1,10 @@
-# TODO:
-#.	Check smoothing splines
-#.	Check rm.spikes parameters -- create adjustment weighting curve based on Z scores?
 
 library('dplyr')
 library('forecast')
 library('xts')
 library('lubridate')
 
-
-departmentsToForecast <- c('Chat', 'Customer Care', 'Retentions', 'Sales', 'Commercial Support', 'Tech Support')
+departmentsToForecast <- c('Department 1', 'Department 2', 'etc')
 
 # Takes inContact report template call data, and returns forecasts for each department
 # Always returns forecast in 15 minute intervals
@@ -25,14 +21,14 @@ createForecasts <- function(d, interval=30, period=48*7, rm.holidays=TRUE, rm.sp
     # Data frame to store all the forecasts
     results <- data.frame(matrix(nrow=48*7*2, ncol=2))
     colnames(results) <- c('DOW', 'Interval')
-
+    
     # Add column to show intervals and day of week, using first department's start/stop dates
     # - Always 15 minute intervals, since that is how fcast will be exported
     first.interval <- tail(index(nco.aht.interval(d[d$Department==departmentsToForecast[1], ], interval=interval)), 1) + minutes(interval)
     results$Interval <- seq.POSIXt(from=first.interval, by=paste(15,'mins'), length.out=48*7*2, tz=tz)
     results$DOW <- factor(weekdays(results$Interval, abbreviate=FALSE),
                           c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'))
-
+    
     # since the intervals above are always 15-minute, create interval list that is 30 minutes (if interval arg=30)
     ints.matching.interval <- seq.POSIXt(from=first.interval, by=paste(interval,'mins'), length.out=period, tz=tz)
     
@@ -46,25 +42,32 @@ createForecasts <- function(d, interval=30, period=48*7, rm.holidays=TRUE, rm.sp
         nco <- nco.aht.interval(dpt.data, interval=interval)
         
         if (rm.holidays) nco <- rm.junk.days(nco, dpt, period=period) # Remove holidays/outage days listed in "Ingore" CSV file
-        if (rm.spikes) nco$Calls <- rm.spikes(nco$Calls, returnZscores=FALSE)
+        if (rm.spikes) {
+            nco$Calls <- rm.spikes(nco$Calls, returnZscores=FALSE)
+            nco$AHT <- rm.spikes(nco$AHT, column='AHT', returnZscores=FALSE)
+        }
         
         # Create forecast and print some info about it 
         fcast.calls <- stlf(ts(as.integer(nco$Calls), f=period), h=period)
         print(paste(dpt, 'forecast', fcast.calls$model$method, 'parameters:'), quote=FALSE)
+        
+        # Print call forecast parameters: higher "alpha" values mean older weeks have less impact
         print(coefficients(fcast.calls$model))
-        if (dpt.plots) plot(1:(period), fcast.calls$mean, type='l', main=dpt)
         
         # Forecast AHT
-        nco$AHT[is.na(nco$AHT) | is.infinite(nco$AHT)] <- 0   # Remove NA's and Infinities 
+        nco$AHT[is.na(nco$AHT) | is.infinite(nco$AHT)] <- 0   # Remove NA's and Infinities
         fcast.AHT <- stlf(ts(as.integer(nco$AHT), f=period), h=period)
+        
+        if (dpt.plots) plot(1:(period), fcast.AHT$mean, type='l', main=dpt)
         
         #Smooth the forecasts to avoid extreme spikiness
         # *** To make forecasts more smooth, increase the "spar" parameter's value (between 0 and 1) and/or decrease nknots. ***
         # *** To make forecasts more spiky, decrease spar and/or increase nknots. ***
-        fcast.calls <- as.double(smooth.within.HOOPs(xts(fcast.calls$mean, order.by=ints.matching.interval), dpt, nknots=15, spar=0.28))
-        if (dpt.plots) lines(fcast.calls, col='blue')
-        fcast.AHT <- as.double(smooth.within.HOOPs(xts(fcast.AHT$mean, order.by=ints.matching.interval), dpt, nknots=15, spar=0.45))
-
+        fcast.calls <- as.double(smooth.within.HOOPs(xts(fcast.calls$mean, order.by=ints.matching.interval), dpt, nknots=15, spar=0.1))
+        fcast.AHT <- as.double(smooth.within.HOOPs(xts(fcast.AHT$mean, order.by=ints.matching.interval), dpt, nknots=15, spar=0.4))
+        
+        if (dpt.plots) lines(fcast.AHT, col='blue')
+        
         # Remove negatives
         fcast.calls[fcast.calls < 0] <- 0
         fcast.AHT[fcast.AHT < 0] <- 0
@@ -79,18 +82,27 @@ createForecasts <- function(d, interval=30, period=48*7, rm.holidays=TRUE, rm.sp
         results[,paste(dpt,'Calls')] <- fcast.calls
         results[,paste(dpt,'AHT')] <- fcast.AHT
     }
-
+    
     # Sort by day of week, starting with Sunday
-    print(results)
     results <- results[order(results$DOW), ]
-    print(results)
-
+    
     # Plot "Calls" columns and return results
-    col.filter <- seq(3, ncol(results), by=2)
-    matplot(results[ , col.filter], type='l', main='Call Forecast', lwd=1.5, ylim=c(0,60), sub=paste('rm.spikes=',deparse(substitute(rm.spikes))))
-    #legend(x='topright', legend=colnames(results[ , col.filter]), col=1:length(col.filter), lty=1, lwd=1.5, pch=1, cex=0.7, ncol=2)
+    #plotForecasts(results, type='Calls'))
     
     return(results)
+}
+
+plotForecasts <- function(f, type='Calls') {
+    if (type=='AHT') {
+        # Plot "Calls" columns and return results
+        col.filter <- seq(4, ncol(f), by=2)
+        matplot(f[ , col.filter], type='l', main='AHT Forecast', lwd=1.5, ylim=c(0,1000))        
+    } else {
+        # Plot "Calls" columns and return results
+        col.filter <- seq(3, ncol(f), by=2)
+        matplot(f[ , col.filter], type='l', main='Call Forecast', lwd=1.5, ylim=c(0, max(f[,col.filter])))
+    }
+    legend(x='topright', legend=colnames(f[ , col.filter]), col=1:length(col.filter), lty=1, lwd=1.5, pch=1, cex=0.7, ncol=2)
 }
 
 
@@ -99,12 +111,17 @@ createForecasts <- function(d, interval=30, period=48*7, rm.holidays=TRUE, rm.sp
 # divisor: number to divide data values by when converting -- should be 2 for calls, 1 for AHT (to avoid halving AHT)
 convert.to.15.min <- function(d, divisor=2) {
     res <- 1:(length(d)*2) * 0
-    res[1] <- d[1] / divisor
-    for (i in 2:(length(d)-1)) {
-        res[i*2] <- (d[i]) / divisor
-        res[i*2+1] <- (d[i] + d[i+1]) / (2 * divisor)
+
+    for (i in 1:(length(d)-1)) {
+        res[i*2-1] <- d[i] / divisor
+        
+        # Check that we're not coming up to the end of the day (0 in interval)
+        if (d[i+1] == 0) {
+            res[i*2] <- d[i] / divisor
+        } else {
+            res[i*2] <- (d[i] + d[i+1]) / (2 * divisor)
+        }
     }
-    res[(i+1)*2] <- d[i+1] / divisor
     return(res)
 }
 
@@ -161,24 +178,32 @@ rm.junk.days <- function(nco, department, period=48*7*2) {
 
 # Removes outlier intervals based on Z scores
 # Description of Z scores:  http://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm
-rm.spikes <- function(nco, period=48*7, returnZscores=FALSE) {
+rm.spikes <- function(nco, column='Calls', period=48*7, returnZscores=FALSE, zlim=c(-1.5, 2.5)) {
     zs <- xts(1:nrow(nco) * 0, order.by=index(nco))
-    
+    colnames(zs) <- 'zscores'
+
+    # weight of spike intervals: 0.5 means spikes get set to halfway between the spike's actual value and the average for the interval
+    # 1.0 for spike.weight means no change to original values; 0.0 means values outside Z score limits will be set to the average
+    spike.weight <- 0.2   
+    mean.weight  <- 1 - spike.weight  
+
     for (i in 1:period) {
         matching.intervals <- seq.int(from=i %% period, to=nrow(nco), by=period)
-        int.calls <- nco[matching.intervals]$Calls
-        
+        int.calls <- nco[matching.intervals, column]
+
         # Calculate Z scores: measure of how far each data point is away from the mean 
         int.calls$zscores <- (int.calls - mean(int.calls)) / sd(int.calls)
-        
-        # At points where Z score is high or low, set that point to the average for the interval (mean of points at that time/DOW)
-        int.calls$Calls[(int.calls$zscores > 2.5) | (int.calls$zscores < -2.0)]  <-  mean(int.calls$Calls)
-        
-        nco[matching.intervals]$Calls <- int.calls$Calls
-        zs[matching.intervals] <- int.calls$zscores
-        
-        #  break
+
+        # At points where Z score is high or low, set that point between original value and the interval's mean (mean of points at that time/DOW)
+        # Note: to change how much the spike retains its spikiness, increase spike.weight (near top of this function)
+        int.calls[(int.calls$zscores > zlim[2]) | (int.calls$zscores < zlim[1]), column]  <-
+            spike.weight*int.calls[(int.calls$zscores > zlim[2]) | (int.calls$zscores < zlim[1]), column] + mean.weight*mean(int.calls[,column])
+
+        # Store smoothed values in nco, and Z scores in zs
+        nco[matching.intervals, column] <- int.calls[,column]
+        zs[matching.intervals]$zscores <- int.calls$zscores
     }
+
     if (returnZscores) {
         return(cbind(nco, zs))
     } else {
@@ -190,25 +215,24 @@ rm.spikes <- function(nco, period=48*7, returnZscores=FALSE) {
 # d: xts object with interval-level data
 # department: title of department to look up HOOPs (from list object called "HOOPs")
 # ...: arguments to pass to smooth.spline()
-# smooth: if smooth=FALSE, data will not be smoothed, but intervals outside HOOPs will be set to 0
+# smooth: if smooth=FALSE, data will not be smoothed, but intervals outside HOOPs will still be set to 0
+#                                               (useful to remove stragglers outside HOOPs in forecast)
 smooth.within.HOOPs <- function(d, department, smooth=TRUE, ...) {
     tzone(d) <- HOOPs$timezone
     dpt.HOOPs <- HOOPs[[department]]
     
-    # Blank xts to store results
+    # xts full of zeros to store results
     d.smoothed <- d
     d.smoothed[] <- 0
     
     for (DOW in c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')) {
-        # Format to filter xts object: e.g., for Care on weekdays, 'T0600/T0959'
+        # Format to filter xts object: e.g., for Care on weekdays, filter.string=='T0600/T0959'
         filter.string <- paste('T', dpt.HOOPs[[DOW]][1], '/T', dpt.HOOPs[[DOW]][2], sep='')
-        d.filtered <- d[weekdays(index(d))==DOW][filter.string]
 
-        if (smooth) {
-            d.smoothed[weekdays(index(d))==DOW][filter.string]  <-  smooth.spline(d.filtered, ...)$y
-        } else {
-            d.smoothed[weekdays(index(d))==DOW][filter.string]  <-  d.filtered
-        }
+        d.filtered <- d[weekdays(index(d))==DOW][filter.string]
+        if (smooth) d.filtered <- smooth.spline(d.filtered, ...)$y
+
+        d.smoothed[weekdays(index(d))==DOW][filter.string]  <-  d.filtered
     }
     
     return(d.smoothed)
@@ -219,48 +243,27 @@ smooth.within.HOOPs <- function(d, department, smooth=TRUE, ...) {
 # Times should be in military format, up to the last minute that is open (e.g., 11:59 AM isntead of 12:00 AM for Tech)
 HOOPs <-
     list(timezone='MST',
-         'Customer Care'=list(Sunday=c('0700','1659'),
+         'Department 1'=list(Sunday=c('0700','1659'),
                               Monday=c('0600', '1959'),
                               Tuesday=c('0600', '1959'),
                               Wednesday=c('0600', '1959'),
                               Thursday=c('0600', '1959'),
                               Friday=c('0600', '1959'),
                               Saturday=c('0700', '1959')),
-         'Retentions'=list(Sunday=c('0700','1659'),
+         'Department 2'=list(Sunday=c('0700','1659'),
                            Monday=c('0600', '1959'),
                            Tuesday=c('0600', '1959'),
                            Wednesday=c('0600', '1959'),
                            Thursday=c('0600', '1959'),
                            Friday=c('0600', '1959'),
                            Saturday=c('0700', '1659')),
-         'Sales'=list(Sunday=c('0800','1659'),
+         'etc'=list(Sunday=c('0800','1659'),
                       Monday=c('0600', '1959'),
                       Tuesday=c('0600', '1959'),
                       Wednesday=c('0600', '1959'),
                       Thursday=c('0600', '1959'),
                       Friday=c('0600', '1959'),
-                      Saturday=c('0700', '1559')),
-         'Tech Support'=list(Sunday=c('0700','1959'),
-                             Monday=c('0500','2359'),
-                             Tuesday=c('0500','2359'),
-                             Wednesday=c('0500','2359'),
-                             Thursday=c('0500','2359'),
-                             Friday=c('0500','2359'),
-                             Saturday=c('0700','1959')),
-         'Commercial Support'=list(Sunday=c('0700','1959'),
-                                   Monday=c('0500','2359'),
-                                   Tuesday=c('0500','2359'),
-                                   Wednesday=c('0500','2359'),
-                                   Thursday=c('0500','2359'),
-                                   Friday=c('0500','2359'),
-                                   Saturday=c('0700','1959')),
-         'Chat'=list(Sunday=c('0700','1959'),
-                     Monday=c('0700','2159'),
-                     Tuesday=c('0700','2159'),
-                     Wednesday=c('0700','2159'),
-                     Thursday=c('0700','2159'),
-                     Friday=c('0700','2159'),
-                     Saturday=c('0700','1959')))
+                      Saturday=c('0700', '1559')))
 
 ###########################################################################
 # Utility functions to deal with data (mostly from inContact reporting)   #
@@ -295,11 +298,27 @@ xts.to.dataframe <- function(x, by='week', period=48*7*2) {
     return(df)
 }
 
-review.weekly.volume <- function(d, date.range, period=48*7*2) {
-    for (dpt in departmentsToForecast) {
-        x <- nco.aht.int.15(d[d$Department==dpt,], dpt)
-        plot(x$Calls[date.range], type='l', main=dpt)
-    }
+compare.weekly <- function(f, nco, date.range, interval=15) {
+    f <- data.frame(Calls=as.double(f[,1]),
+                    DOW=factor(weekdays(index(f), abbreviate=FALSE), c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')))
+    f <- f[order(f$DOW), ]
+    
+    plot(f$Calls, ylim=c(0,80), type='l')
+    i <- 2
+
+    apply.weekly(nco['2017-01-01::2017-01-07'], function(x) {
+
+        x <- data.frame(Calls=as.double(x[,1]),
+                        Interval=index(x),
+                        DOW=factor(weekdays(index(x), abbreviate=FALSE), c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')))
+        x <- x[order(x$Interval,x$DOW),]
+        print(head(x))
+        print(tail(x))
+        lines(x$Calls, col=i)
+        i <<- i + 1
+    })
+    
+    lines(f$Calls)
 }
 
 
@@ -375,15 +394,17 @@ nco.aht.interval <- function(dataf, interval=15, tz='MST') {
     
     # Sum up each interval's inbound numbers, regardless of campaign, etc.
     int.data <- aggregate(. ~ Intervals, dataf.with.all.intervals, FUN=sum, na.action=na.pass, na.rm=TRUE)
-
+    
     # Create result as xts object, then aggregate on 30 or 15 minute intervals
     res <- xts(cbind(Calls=int.data$Inbound, Handled=int.data$Inbound.Handled, Handle.Time=int.data$Inbound.Handle.Time),
                order.by=int.data$Intervals)
     res <- align.time.down(res, n=interval*60)
     res <- aggregate(. ~ index(res), res, FUN=sum)
-
+    
     # The aggregate function turns "res" back into a data.frame, so it must be transformed into xts again while calculating AHT
     res <- xts(cbind(Calls=res$Calls, AHT=res$Handle.Time / res$Handled), order.by=res$`index(res)`)
+    
+    res$AHT[is.na(res$AHT) | is.infinite(res$AHT)] <- 0   # Remove NA's and Infinities
     
     return(res)
 }
@@ -397,97 +418,6 @@ align.time.down <- function(x, n=60*30) {
 }
 
 # Scale x to fit within min and max of range (nice for plotting multiple axes w/o having to make multiple axes)
-scale.range <- function(x, range) {
-    return(x / (max(x,na.rm=T) / max(range,na.rm=T)))
+scale.range <- function(x, range, max.x=max(x,na.rm=T)) {
+    return(x / (max.x / max(range,na.rm=T)))
 }
-
-# 
-# # Takes a data.frame extracted from inContact data
-# # Returns an xts ordered by 15 minute interval, containing Inbound and AHT with all campaigns consolidated
-# nco.aht.int.15 <- function(dataf, tz='MST') {
-#     # Transform times from "HH:MM-HH:MM" strings to POSIX start times
-#     int.starts <- substr(dataf$Interval.15.Minutes, 0, regexpr('-', dataf$Interval.15.Minutes) - 1)
-#     dataf$Intervals <- as.POSIXct(paste(dataf$Date, dataf$Interval.15.Minutes), format='%m/%d/%Y %H:%M', tz=tz)
-#     
-#     # Sort data oldest to newest
-#     dataf <- dataf[order(dataf$Intervals),]
-#     
-#     # Create range of intervals to ensure no gaps in final product
-#     # First, set intervals to extend from midnight to midnight
-#     first.interval <- floor_date(dataf$Intervals[1], 'day')
-#     last.interval  <- as.POSIXct(paste(format(tail(dataf$Intervals, 1), '%Y-%m-%d'), '23:45'))
-#     ints <- seq.POSIXt(from=first.interval, to=last.interval, by='15 mins', tz=tz)
-#     int.df <- data.frame(Intervals=ints)
-#     
-#     # Re-create data.frame with all intervals (and put 0s for rows that were missing)
-#     dataf.with.all.intervals <- full_join(int.df, dataf, by='Intervals')
-#     dataf.with.all.intervals$Inbound[is.na(dataf.with.all.intervals$Inbound)] <- 0
-#     
-#     # Sum up each interval's inbound numbers, regardless of campaign, etc.
-#     int.data <- aggregate(. ~ Intervals, dataf.with.all.intervals, FUN=sum, na.action=na.pass, na.rm=TRUE)
-#     int.data$AHT <- int.data$Inbound.Handle.Time / int.data$Inbound.Handled
-#     
-#     # Create result as xts object
-#     res <- xts(x=int.data$Inbound, order.by=int.data$Intervals)
-#     colnames(res) <- c('Calls')
-#     
-#     res$AHT <- int.data$AHT
-#     return(res)
-# }
-
-
-# 
-# # Takes a data.frame extracted from inContact data
-# # Returns an xts ordered by 15 minute interval, containing Inbound with all campaigns consolidated
-# nco.int.15 <- function(dataf, tz='MST') {
-#     # Transform times from "HH:MM-HH:MM" strings to POSIX start times
-#     int.starts <- substr(dataf$Interval.15.Minutes, 0, regexpr('-', dataf$Interval.15.Minutes) - 1)
-#     dataf$Intervals <- as.POSIXct(paste(dataf$Date, dataf$Interval.15.Minutes), format='%m/%d/%Y %H:%M', tz=tz)
-#     
-#     # Sort data oldest to newest
-#     dataf <- dataf[order(dataf$Intervals),]
-#     
-#     # Create range of intervals to ensure no gaps in final product
-#     # First set intervals to extend from midnight to midnight
-#     first.interval <- floor_date(dataf$Intervals[1], 'day')
-#     last.interval  <- as.POSIXct(paste(format(tail(dataf$Intervals, 1), '%Y-%m-%d'), '23:45'))
-#     ints <- seq.POSIXt(from=first.interval, to=last.interval, by='15 mins', tz=tz)
-#     int.df <- data.frame(Intervals=ints)
-#     
-#     # Re-create data.frame with all intervals, then put 0s for rows that were missing
-#     dataf.with.all.intervals <- full_join(int.df, dataf, by='Intervals')
-#     dataf.with.all.intervals$Inbound[is.na(dataf.with.all.intervals$Inbound)] <- 0
-#     
-#     # Sum up each interval's inbound numbers, regardless of campaign, etc.
-#     int.data <- aggregate(Inbound ~ Intervals, dataf.with.all.intervals, FUN=sum)
-#     return(xts(x=int.data$Inbound, order.by=int.data$Intervals))
-# }
-# 
-# 
-# # Takes a data.frame extracted from inContact data
-# # Returns an xts ordered by 30 minute interval, containing Inbound with all campaigns consolidated
-# nco.int.30 <- function(dataf, tz='MST') {
-#     # Transform times from "HH:MM-HH:MM" strings to POSIX start times
-#     int.starts <- substr(dataf$Interval.30.Minutes, 0, regexpr('-', dataf$Interval.30.Minutes) - 1)
-#     dataf$Intervals <- as.POSIXct(paste(dataf$Date, dataf$Interval.30.Minutes), format='%m/%d/%Y %H:%M', tz=tz)
-#     
-#     # Sort data oldest to newest
-#     dataf <- dataf[order(dataf$Intervals),]
-#     
-#     # Create range of intervals to ensure no gaps in final product
-#     # First set intervals to extend from midnight to midnight
-#     first.interval <- floor_date(dataf$Intervals[1], 'day')
-#     last.interval  <- as.POSIXct(paste(format(tail(dataf$Intervals, 1), '%Y-%m-%d'), '23:30'))
-#     ints <- seq.POSIXt(from=first.interval, to=last.interval, by='30 mins', tz=tz)
-#     int.df <- data.frame(Intervals=ints)
-#     
-#     # Re-create data.frame with all intervals (and put 0s for rows that were missing)
-#     dataf.with.all.intervals <- full_join(int.df, dataf, by='Intervals')
-#     dataf.with.all.intervals$Inbound[is.na(dataf.with.all.intervals$Inbound)] <- 0
-#     
-#     # Sum up each interval's inbound numbers, regardless of campaign, etc.
-#     int.data <- aggregate(Inbound ~ Intervals, dataf.with.all.intervals, FUN=sum)
-#     return(xts(x=int.data$Inbound, order.by=int.data$Intervals))
-# }
-
-

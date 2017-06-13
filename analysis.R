@@ -4,6 +4,7 @@ library('xts')
 library('lubridate')
 
 
+
 # Hours Of OPerations
 # Times should be in military format, up to the last minute that is open (e.g., 2359 Tech's weekdays which close at midnight)
 HOOPs <-
@@ -72,8 +73,7 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
     
     # Add column to show intervals and day of week, using first department's start/stop dates
     # - Truncated to nearest day (always 15 minute intervals, since that is how fcast will be exported)
-    first.fcast.interval <- trunc(tail(index(nco.aht.interval(d[d$Department==departmentsToForecast[1], ],
-                                                              interval=15)), 1),
+    first.fcast.interval <- trunc(tail(index(nco.aht.interval(d[d$Department==departmentsToForecast[1], ], interval=15)), 1),
                                   'days')  +
                                  days(1)
 
@@ -111,7 +111,7 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
         nco$AHT[is.na(nco$AHT) | is.infinite(nco$AHT)] <- 0   # Remove NA's and Infinities
         fcast.AHT <- stlf(ts(as.integer(nco$AHT), frequency=period), h=period, robust=TRUE)
         
-        if (dpt.plots) plot(1:(period), fcast.calls$mean, type='l', main=dpt, lwd=2)
+        if (dpt.plots) plot(1:(period), fcast.AHT$mean, type='l', main=dpt, lwd=2)
         
         #Smooth the forecasts to avoid extreme spikiness
         # *** To make forecasts more smooth, increase the "spar" parameter's value (between 0 and 1) and/or decrease nknots. ***
@@ -119,9 +119,9 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
         fcast.calls <- as.double(smooth.within.HOOPs(xts(fcast.calls$mean, order.by=ints.matching.interval),
                                                      dpt, nknots=12, spar=0.05))
         fcast.AHT <- as.double(smooth.within.HOOPs(xts(fcast.AHT$mean, order.by=ints.matching.interval),
-                                                   dpt, nknots=15, spar=0.4))
+                                                   dpt, nknots=12, spar=0.4))
 
-        if (dpt.plots) lines(fcast.calls, col='blue', lwd=2)
+        if (dpt.plots) lines(fcast.AHT, col='blue', lwd=2)
 
         # Remove negatives
         fcast.calls[fcast.calls < 0] <- 0
@@ -145,7 +145,7 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
     results <- results[order(results$DOW), ]
 
     # Plot "Calls" columns and return results
-    plotForecasts(results, type='Calls')
+    #plotForecasts(results, type='Calls')
     
     return(results)
 }
@@ -464,3 +464,12 @@ align.time.down <- function(x, n=60*30) {
 scale.range <- function(x, range, max.x=max(x,na.rm=T)) {
     return(x / (max.x / max(range,na.rm=T)))
 }
+
+# Scales x's average to s
+scale.mean <- function(x, destination) {
+    return()
+}
+
+
+
+

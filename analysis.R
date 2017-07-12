@@ -4,7 +4,6 @@ library('xts')
 library('lubridate')
 
 
-
 # Hours Of OPerations
 # Times should be in military format, up to the last minute that is open (e.g., 2359 Tech's weekdays which close at midnight)
 HOOPs <-
@@ -54,9 +53,9 @@ HOOPs <-
 
 departmentsToForecast <- c('Chat', 'Customer Care', 'Retentions', 'Sales', 'Commercial Support', 'Tech Support')
 
-
 # Takes inContact report template call data, and returns forecasts for each department
 # Always returns forecast in 15 minute intervals
+# DATA MUST GO FROM A SUNDAY TO A SATURDAY! - TODO: fix this
 # TODO : try dshw as replacement to stlf
 createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=TRUE, rm.spikes=TRUE, dpt.plots=TRUE, tz='MST') {
     # Check that data is in 15 or 30 minute intervals
@@ -97,7 +96,7 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
         if (rm.holidays) nco <- rm.junk.days(nco, dpt, period=period) # Remove holidays/outage days listed in "Ignore" CSV file
         if (rm.spikes) {
             nco$Calls <- rm.spikes(nco$Calls, returnZscores=FALSE)
-            nco$AHT <- rm.spikes(nco$AHT, column='AHT', returnZscores=FALSE)
+            # nco$AHT <- rm.spikes(nco$AHT, column='AHT', returnZscores=FALSE)
         }
         
         # Create forecast and print some info about it 
@@ -109,16 +108,19 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
         
         # Forecast AHT
         nco$AHT[is.na(nco$AHT) | is.infinite(nco$AHT)] <- 0   # Remove NA's and Infinities
-        fcast.AHT <- stlf(ts(as.integer(nco$AHT), frequency=period), h=period, robust=TRUE)
+
+        fcast.AHT <- forecast.AHT(nco, 48*7*2, results$Interval)
+        fcast.AHT <- ts(as.integer(fcast.AHT))
+        plot(fcast.AHT)
         
-        if (dpt.plots) plot(1:(period), fcast.AHT$mean, type='l', main=dpt, lwd=2)
+        if (dpt.plots) plot(1:(period), fcast.AHT, type='l', main=dpt, lwd=2)
         
         #Smooth the forecasts to avoid extreme spikiness
         # *** To make forecasts more smooth, increase the "spar" parameter's value (between 0 and 1) and/or decrease nknots. ***
         # *** To make forecasts more spiky, decrease spar and/or increase nknots. ***
         fcast.calls <- as.double(smooth.within.HOOPs(xts(fcast.calls$mean, order.by=ints.matching.interval),
                                                      dpt, nknots=12, spar=0.05))
-        fcast.AHT <- as.double(smooth.within.HOOPs(xts(fcast.AHT$mean, order.by=ints.matching.interval),
+        fcast.AHT <- as.double(smooth.within.HOOPs(xts(fcast.AHT, order.by=ints.matching.interval),
                                                    dpt, nknots=12, spar=0.4))
 
         if (dpt.plots) lines(fcast.AHT, col='blue', lwd=2)
@@ -132,8 +134,8 @@ createIntervalForecasts <- function(d, interval=15, period=48*7*2, rm.holidays=T
             print("converting to 15-minute intervals")
             fcast.calls <- as.double(smooth.within.HOOPs(xts(convert.to.15.min(fcast.calls, divisor=2),
                                                              order.by=results$Interval), dpt, smooth=FALSE))
-            fcast.AHT   <- as.double(smooth.within.HOOPs(xts(convert.to.15.min(fcast.AHT,   divisor=1),
-                                                             order.by=results$Interval), dpt, smooth=FALSE))
+            # fcast.AHT   <- as.double(smooth.within.HOOPs(xts(convert.to.15.min(fcast.AHT,   divisor=1),
+            #                                                  order.by=results$Interval), dpt, smooth=FALSE))
         }
         
         # Assign forecast values to the department's columns
@@ -227,11 +229,29 @@ rm.junk.days <- function(nco, department, period=48*7*2) {
         nco$Calls[i] <- mean(nco$Calls[matching.intervals])
         
         # AHT is weighted average of AHT with calls 
-        nco$AHT[i] <- sum(nco$Calls[matching.intervals] * nco$AHT[matching.intervals])  / 
-                      sum(nco$Calls[matching.intervals])
+        # nco$AHT[i] <- sum(nco$Calls[matching.intervals] * nco$AHT[matching.intervals])  / 
+        #               sum(nco$Calls[matching.intervals])
     }
     
     return(nco)
+}
+
+
+# Forecast AHT based on simple average of previous values -- *excluding* historical intervals with no calls handled
+# historical: xts object with AHT data, indexed with dates and times
+# intervals: object containing intervals to forecast through
+forecast.AHT <- function(historical, period, intervals) {
+    results <- 1:length(intervals)
+    for (i in 1:length(intervals)) {
+        # Determine intervals at same day-of-week and time
+        matching.intervals <- seq.int(i %% period, nrow(historical), period)
+        
+        # AHT is weighted average of AHT with calls 
+        results[i] <- sum(historical$Handled[matching.intervals] * historical$AHT[matching.intervals])  / 
+                      sum(historical$Handled[matching.intervals])
+    }
+    results[is.na(results) | is.infinite(results)] <- 0   # Remove NA's and Infinities
+    return(results)
 }
 
 
@@ -445,7 +465,7 @@ nco.aht.interval <- function(dataf, interval=15, tz='MST') {
     res <- aggregate(. ~ index(res), res, FUN=sum)
     
     # The aggregate function turns "res" back into a data.frame, so it must be transformed into xts again while calculating AHT
-    res <- xts(cbind(Calls=res$Calls, AHT=res$Handle.Time / res$Handled), order.by=res$`index(res)`)
+    res <- xts(cbind(Calls=res$Calls, AHT=res$Handle.Time / res$Handled, Handled=res$Handled), order.by=res$`index(res)`)
     
     res$AHT[is.na(res$AHT) | is.infinite(res$AHT)] <- 0   # Remove NA's and Infinities
     
@@ -469,7 +489,3 @@ scale.range <- function(x, range, max.x=max(x,na.rm=T)) {
 scale.mean <- function(x, destination) {
     return()
 }
-
-
-
-
